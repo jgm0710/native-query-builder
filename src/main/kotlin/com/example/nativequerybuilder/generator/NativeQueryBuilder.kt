@@ -7,6 +7,8 @@ class NativeQueryBuilder {
 
     val queryParams = mutableMapOf<String, Any?>()
 
+    val batchQueryParams = mutableListOf<MutableMap<String, Any?>>()
+
 
     fun with(name: String, queryBuilder: NativeQueryBuilder.() -> Unit): NativeQueryBuilder {
         query += "WITH $name AS ("
@@ -147,6 +149,25 @@ class NativeQueryBuilder {
 
     fun addParams(vararg  pairs : Pair<String, Any?>): NativeQueryBuilder {
         queryParams.putAll(pairs)
+        return this
+    }
+
+    fun loop(loopCount: Int, queryBuilder: NativeQueryBuilder.() -> Unit): NativeQueryBuilder {
+        for (i in 0 until loopCount) {
+            this.queryBuilder()
+        }
+        return this
+    }
+
+    fun <T> mapLoop(collections : Collection<T>, queryBuilder: NativeQueryBuilder.(T) -> Unit): NativeQueryBuilder {
+        collections.forEach {
+            this.queryBuilder(it)
+        }
+        return this
+    }
+
+    fun addBatchParams(vararg  pairs : Pair<String, Any?>): NativeQueryBuilder {
+        batchQueryParams.add(pairs.toMap().toMutableMap())
         return this
     }
 

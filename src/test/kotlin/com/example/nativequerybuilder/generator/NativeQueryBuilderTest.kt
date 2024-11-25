@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
-import org.springframework.ui.context.support.UiApplicationContextUtils
 import java.time.OffsetDateTime
 import java.util.UUID
 import kotlin.random.Random
@@ -16,113 +15,114 @@ class NativeQueryBuilderTest {
     @Autowired
     lateinit var namedParameterJdbcTemplate: NamedParameterJdbcTemplate
 
+    @Autowired
+    lateinit var nativeQueryTemplate: NativeQueryTemplate
+
     @BeforeEach
     fun setUp() {
         namedParameterJdbcTemplate.jdbcTemplate.execute(
             """
-            CREATE TABLE IF NOT EXISTS users (
+            CREATE TABLE IF NOT EXISTS stores (
                 id UUID PRIMARY KEY,
-                name VARCHAR(255),
-                email VARCHAR(255),
+                name VARCHAR,
+                rate_plan_kind VARCHAR,
                 created_at TIMESTAMP with time zone,
                 last_modified_at TIMESTAMP with time zone
              );
             
               
-        CREATE TABLE IF NOT EXISTS orders (
-            id UUID PRIMARY KEY,
-            user_id UUID,
-            product_name VARCHAR(255),
-            quantity INT,
-            price int,
-            order_date TIMESTAMP with time zone
-        );
+            CREATE TABLE IF NOT EXISTS settlement (
+                id UUID PRIMARY KEY,
+                store_id UUID,
+                payment_method VARCHAR,
+                payment_price INT,
+                promotion_price INT,
+                sales_date TIMESTAMP with time zone
+            );
         """.trimIndent()
         )
-
-
     }
 
-    @Test
-    fun insertUserTest() {
-        insertUser()
-    }
-
-    private fun insertUser(): UUID {
-        val id = UUID.randomUUID()
+    fun insertStore(
+        ratePlanKind: String,
+        offsetDateTime: OffsetDateTime,
+    ): UUID {
+        val storeId: UUID = UUID.randomUUID()
         NativeQueryBuilder()
-            .insert("users")
-            .columns("id", "name", "email", "created_at", "last_modified_at")
-            .values(":id", ":name", ":email", ":createdAt", ":lastModifiedAt")
-            .addParams(
-                "id" to id,
-                "name" to "John",
-                "email" to "jgm@email.com",
-                "createdAt" to OffsetDateTime.now(),
-                "lastModifiedAt" to OffsetDateTime.now()
+            .insert("stores")
+            .columns("id", "name", "rate_plan_kind", "created_at", "last_modified_at")
+            .values(
+                ":id",
+                ":name",
+                ":rate_plan_kind",
+                ":created_at",
+                ":last_modified_at"
             )
-            .let {
-                namedParameterJdbcTemplate.update(it.query, it.queryParams)
-            }
+            .addParams(
+                "id" to storeId,
+                "name" to "store_${storeId}",
+                "rate_plan_kind" to ratePlanKind,
+                "created_at" to offsetDateTime,
+                "last_modified_at" to offsetDateTime
+            ).let { nativeQueryTemplate.execute(it) }
 
-        return id
+        return storeId
     }
 
-    fun insertOrder(userId: UUID) {
-        NativeQueryBuilder()
-            .insert("orders")
-            .columns("id", "user_id", "product_name", "quantity", "price", "order_date")
-            .values(":id", ":userId", ":productName", ":quantity", ":price", ":orderDate")
-            .addParams(
-                "id" to UUID.randomUUID(),
-                "userId" to userId,
-                "productName" to "${userId}_Macbook Pro",
-                "quantity" to 1,
-                "price" to Random.nextInt(100, 1000),
-                "orderDate" to OffsetDateTime.now()
-            )
-            .let {
-                namedParameterJdbcTemplate.update(it.query, it.queryParams)
-            }
-    }
+    fun insertSettlements() {
+        val storeIds = mutableListOf<UUID>()
 
-    @Test
-    fun selectAllUsers() {
-        repeat(10) {
-            val userid = insertUser()
-            repeat(Random.nextInt(1, 5)) {
-                insertOrder(userid)
+        repeat(100) { index ->
+            if (index % 2 == 0) {
+                insertStore("FLAT", OffsetDateTime.now().minusDays(index.toLong()))
+                    .let { storeIds.add(it) }
+            } else {
+                insertStore("BROKERAGE", OffsetDateTime.now().minusDays(index.toLong()))
+                    .let { storeIds.add(it) }
             }
         }
 
+
+        val paymentMethods = listOf("CARD", "CASH", "MOBILE")
+        val salesDates = listOf(
+            OffsetDateTime.now().minusDays(1),
+            OffsetDateTime.now().minusDays(2),
+            OffsetDateTime.now().minusDays(3)
+        )
+
         NativeQueryBuilder()
-            .with("ordersCountByUser") {
-                select(
-                    "user_id",
-                    "count(*) as order_count",
-                    "sum(price) as total_price",
-                    "max(order_date) as last_order_date"
-                )
-                    .from("orders")
-                    .groupBy("user_id")
-                    .having("count(*) > 2").and("total_price >1000")
-            }
-            .select(
-                "users.id as userId",
-                "name",
-                "email",
-                "order_count",
-                "total_price",
-                "to_char(ordersCountByUser.last_order_date, 'YYYY-MM-DD') as last_order_date"
+            .insert("settlement")
+            .columns("id", "store_id", "payment_method", "payment_price", "promotion_price", "sales_date")
+            .values(
+                ":id",
+                ":store_id",
+                ":payment_method",
+                ":payment_price",
+                ":promotion_price",
+                ":sales_date"
             )
-            .from("users")
-            .join("ordersCountByUser").on("users.id = ordersCountByUser.user_id")
-            .orderBy("ordersCountByUser.order_count desc", "ordersCountByUser.total_price desc")
-            .limit(3)
-            .let { namedParameterJdbcTemplate.queryForList(it.query, it.queryParams) }
-            .forEach {
-                println(it)
-            }
+            .mapLoop(storeIds) { storeId ->
+                addBatchParams(
+                    "id" to UUID.randomUUID(),
+                    "store_id" to storeId,
+                    "payment_method" to paymentMethods[Random.nextInt(0, 3)],
+                    "payment_price" to Random.nextInt(1000, 10000),
+                    "promotion_price" to Random.nextInt(100, 1000),
+                    "sales_date" to salesDates[Random.nextInt(0, 3)]
+                )
+            }.let { nativeQueryTemplate.batchExecute(it) }
     }
 
+    @Test
+    fun `query settlements`() {
+        insertSettlements()
+
+        NativeQueryBuilder()
+            .with("settlementGroupByStoreIdAndSalesDateAndPaymentMethod"){
+                select("store_id", "sales_date", "payment_method")
+                    .from("settlement")
+                    .join("stores").on("settlement.store_id = stores.id")
+            }
+
+    }
 }
